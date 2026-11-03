@@ -6,11 +6,12 @@
 
 사이렌 감지 엣지 AI 알림 (청각장애인 보조). 1인 프로젝트, 2026-11-03 시작.
 XIAO ESP32-S3 Sense 마이크 → ESP32 안의 소리 분류 모델(siren / noise) → 연속 확인·쿨다운 → Supabase `siren_events` → 휴대폰 웹 페이지가 Realtime으로 받아 화면 깜빡임·진동으로 알린다.
+ESP32는 30초마다 `devices`에 생존 신호를 보내고, 웹은 90초 넘게 신호가 없으면 "기기 응답 없음"을 띄운다.
 기존 경보를 대체하지 않는 **보조 수단**이다.
 
 먼저 읽을 문서:
 1. `README.md`: 폴더, 진행 순서, 판정 설정, 알려진 한계
-2. `docs/contracts/siren_event.md`: ESP32 → Supabase 데이터 형식
+2. `docs/contracts/`: ESP32 → Supabase 데이터 형식 (`siren_event.md`, `device_heartbeat.md`)
 3. `esp32/model/README.md`: Edge Impulse 설정, 데이터 수집 방법
 
 ## 1. 필수 조건 (과제)
@@ -20,12 +21,12 @@ XIAO ESP32-S3 Sense 마이크 → ESP32 안의 소리 분류 모델(siren / nois
 | 조건 | 구현 |
 |---|---|
 | ESP32에 모델을 넣어 사용 | `esp32/firmware/siren_alert/` + `esp32/model/`의 Edge Impulse 라이브러리 |
-| 로그를 DB에 저장 | `cloud/supabase/schema.sql`의 `siren_events` |
+| 로그를 DB에 저장 | `cloud/supabase/schema.sql`의 `siren_events`, `devices` |
 | CI 구현 | `.github/workflows/ci.yml` |
 
 ## 2. 범위
 
-- 지금은 **이진 분류**만 한다: 라벨 `siren`, `noise`. Edge Impulse 프로젝트 이름은 `siren_detect` (헤더 `<siren_detect_inferencing.h>`).
+- 지금은 **이진 분류**만 한다. 지금 모델은 `Emergency_vehices_alarm` 1.0.17 (라벨 `Noise`, `SIREN`, 헤더 `<Emergency_vehices_alarm_inferencing.h>`). 모델을 바꾸면 `#include`와 `SIREN_LABEL`을 맞춘다 (`esp32/model/README.md`).
 - 사이렌 종류 구분(화재경보, 구급차, 민방위)은 이진 분류가 동작한 뒤에 한다. 라벨을 늘리면 `SIREN_LABEL` 판정과 `label` 컬럼 사용을 함께 바꾼다.
 
 ## 3. 개발 환경
@@ -33,7 +34,7 @@ XIAO ESP32-S3 Sense 마이크 → ESP32 안의 소리 분류 모델(siren / nois
 | 대상 | 기준 |
 |---|---|
 | ESP32 | Seeed XIAO ESP32S3 Sense, FQBN `esp32:esp32:XIAO_ESP32S3:PSRAM=opi`, esp32 코어 3.3.12 (`ci.yml`과 같은 값) |
-| 마이크 | PDM, CLK GPIO42 / DATA GPIO41, 16000Hz, 16bit 모노 |
+| 마이크 | PDM, CLK GPIO42 / DATA GPIO41, 16000Hz, 16bit 모노, `MIC_GAIN` 8 |
 | 모델 | Edge Impulse, 창 1000ms, MFE + 1D Conv, int8, EON |
 | DB | Supabase (리전 Seoul) |
 | Python | 3.12, 테스트는 `tests/requirements.txt` |
@@ -52,6 +53,7 @@ XIAO ESP32-S3 Sense 마이크 → ESP32 안의 소리 분류 모델(siren / nois
 ## 5. 커밋하지 않는 것
 
 - `esp32/firmware/siren_alert/config.h` (Wi-Fi 비밀번호, Supabase key)
+- `web/config.js` (Supabase key, 감시할 기기). 틀은 `web/config.example.js`
 - `data/`, `*.wav` (녹음 원본, YouTube 소리 포함)
 - Supabase `secret` / `service_role` key는 어디에도 넣지 않는다. ESP32와 웹은 anon(publishable) key만 쓴다.
 
@@ -59,7 +61,9 @@ XIAO ESP32-S3 Sense 마이크 → ESP32 안의 소리 분류 모델(siren / nois
 
 ## 6. 데이터 형식
 
-- 형식을 바꾸면 `cloud/supabase/schema.sql`, `siren_alert.ino`의 JSON, `web/app.js`의 `select`, `docs/contracts/siren_event.md`를 같은 커밋에서 함께 고친다. `tests/contracts/`가 셋을 대조한다.
+- 형식을 바꾸면 `cloud/supabase/schema.sql`, `siren_alert.ino`의 `EVENT_JSON`·`HEARTBEAT_JSON`, `web/app.js`의 `select`, `docs/contracts/`를 같은 커밋에서 함께 고친다. `tests/contracts/`가 셋을 대조한다.
+- `devices.last_seen`은 ESP32가 보내지 않고 DB 트리거가 `now()`로 채운다. 트리거를 지우면 upsert 때 갱신되지 않아 웹이 기기를 계속 응답 없음으로 본다.
+- `HEARTBEAT_MS`(펌웨어)를 바꾸면 `OFFLINE_AFTER_MS`(웹)를 그 3배로 함께 바꾼다.
 - 스키마 변경은 Supabase SQL Editor에서 `schema.sql`을 다시 실행해 반영한다 (여러 번 실행해도 되게 작성한다).
 - `SUPABASE_URL`은 `https://<ref>.supabase.co`까지만 넣는다. `/rest/v1/`를 붙이면 경로가 두 번 들어가 404(`PGRST125`)가 난다. 따옴표는 곧은 따옴표 `"`만 쓴다.
 

@@ -33,14 +33,68 @@ create policy "anon read siren_events"
   to anon
   using (true);
 
--- 웹 실시간 알림
-do $$
+-- 기기 생존 신호. 기기마다 한 줄을 ESP32가 30초마다 덮어쓴다 (docs/contracts/device_heartbeat.md).
+-- 웹은 last_seen이 90초 넘게 지나면 "기기 응답 없음"을 띄운다.
+create table if not exists public.devices (
+  device_id   text primary key check (char_length(device_id) between 1 and 64),
+  last_seen   timestamptz not null default now(),
+  fw_version  text check (char_length(fw_version) <= 32),
+  rssi        integer,
+  uptime_s    bigint check (uptime_s >= 0)
+);
+
+-- last_seen은 ESP32가 아니라 DB가 받은 시각으로 채운다 (ESP32에는 시계가 없다).
+-- upsert의 update에서는 default가 적용되지 않으므로 트리거로 매번 now()를 넣는다.
+create or replace function public.devices_touch_last_seen()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
 begin
-  if not exists (
-    select 1 from pg_publication_tables
-    where pubname = 'supabase_realtime'
-      and schemaname = 'public' and tablename = 'siren_events'
-  ) then
-    alter publication supabase_realtime add table public.siren_events;
-  end if;
+  new.last_seen := now();
+  return new;
+end $$;
+
+drop trigger if exists devices_touch_last_seen on public.devices;
+create trigger devices_touch_last_seen
+  before insert or update on public.devices
+  for each row execute function public.devices_touch_last_seen();
+
+-- anon은 넣기·고치기(upsert)·읽기만 한다. 지우기는 못 한다 (시연용 RLS: 누구나 어느 기기 줄이든 고칠 수 있다)
+alter table public.devices enable row level security;
+grant select, insert, update on public.devices to anon;
+
+drop policy if exists "anon insert devices" on public.devices;
+create policy "anon insert devices"
+  on public.devices for insert
+  to anon
+  with check (true);
+
+drop policy if exists "anon update devices" on public.devices;
+create policy "anon update devices"
+  on public.devices for update
+  to anon
+  using (true)
+  with check (true);
+
+drop policy if exists "anon read devices" on public.devices;
+create policy "anon read devices"
+  on public.devices for select
+  to anon
+  using (true);
+
+-- 웹 실시간 알림 (사이렌 이벤트, 기기 상태)
+do $$
+declare
+  t text;
+begin
+  foreach t in array array['siren_events', 'devices'] loop
+    if not exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime'
+        and schemaname = 'public' and tablename = t
+    ) then
+      execute format('alter publication supabase_realtime add table public.%I', t);
+    end if;
+  end loop;
 end $$;

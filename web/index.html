@@ -34,6 +34,11 @@
     li:first-child { border-top: 0; }
     li .meta { color: var(--muted); font-size: 13px; }
     #empty { color: var(--muted); margin: 0; }
+    #no-device { margin: 0; }
+    .warn { margin: 0 0 8px; padding: 10px 12px; border-radius: 8px; background: var(--alert); color: #fff; font-weight: 600; }
+    .dev-state::before { content: "●"; margin-right: 6px; }
+    .dev-state.on { color: var(--ok); }
+    .dev-state.off { color: var(--alert); font-weight: 600; }
     #error { color: var(--alert); margin: 0; }
 
     /* 알림 화면: 1초에 한 번 깜빡인다 (초당 3회 이하, WCAG 2.3.1). 움직임 줄이기 설정이면 깜빡이지 않는다 */
@@ -52,8 +57,15 @@
   <main>
     <header>
       <h1>사이렌 알림</h1>
-      <span id="status" role="status">연결 중</span>
+      <span id="status" role="status">서버 연결 중</span>
     </header>
+
+    <section class="card">
+      <h2>기기 상태</h2>
+      <p id="device-warn" class="warn" role="alert" hidden></p>
+      <p id="no-device" class="hint">아직 신호를 보낸 기기가 없습니다. ESP32를 켜면 30초 안에 나타납니다.</p>
+      <ol id="devices"></ol>
+    </section>
 
     <section class="card">
       <button id="arm" type="button" aria-pressed="false">알림 켜기</button>
@@ -76,7 +88,8 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
-  <script src="config.js"></script>
-  <script src="app.js"></script>
+  <!-- ?v=는 app.js·config.js를 고칠 때마다 올린다. 안 올리면 브라우저가 캐시의 예전 파일을 쓴다 -->
+  <script src="config.js?v=3"></script>
+  <script src="app.js?v=3"></script>
 </body>
 </html>

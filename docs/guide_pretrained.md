@@ -29,8 +29,9 @@ Edge Impulse에서 **이미 학습이 끝난 사이렌 모델**을 받아 XIAO E
 1. https://supabase.com → **New project**. Name `siren-alert`, Region **Northeast Asia (Seoul)**.
 2. **SQL Editor** → New query → `cloud/supabase/schema.sql` 전체를 붙여 넣고 **Run**.
 3. 확인
-   - **Table Editor**에 `siren_events`가 있다.
-   - **Database → Publications → `supabase_realtime`**에서 `siren_events`가 켜져 있다.
+   - **Table Editor**에 `siren_events`, `devices`가 있다.
+   - **Database → Publications → `supabase_realtime`**에서 `siren_events`, `devices`가 켜져 있다.
+   - `schema.sql`이 바뀌면 (예: `devices` 추가) SQL Editor에서 **전체를 다시 실행**한다. 여러 번 실행해도 기존 기록은 지워지지 않는다.
 4. **Project Settings → API Keys**에서 publishable(또는 Legacy의 anon) key, **Data API**에서 Project URL을 복사한다.
    `secret` / `service_role` key는 쓰지 않는다.
 5. 저장 시험
@@ -189,14 +190,15 @@ Serial Monitor를 보면서 소리별 `siren=` 점수를 표에 적는다. **학
 
 ## 7. 웹 알림 페이지
 
-1. `web/config.js`에 `supabaseUrl`, `supabaseKey`를 채운다.
+1. `cp web/config.example.js web/config.js`로 설정 파일을 만들고 `supabaseUrl`, `supabaseKey`를 채운다.
+   `watchDevices`에는 감시할 ESP32의 `DEVICE_ID`(기본 `mic-01`)를 적는다. 적은 기기만 표시하고 경고한다.
 2. 실행
 
    ```bash
    python -m http.server -d web 8000
    ```
 
-3. Mac에서 http://localhost:8000 → 오른쪽 위가 **실시간 연결됨**인지 확인한다.
+3. Mac에서 http://localhost:8000 → 오른쪽 위가 **서버 연결됨**인지 확인한다. 이 표시는 웹과 Supabase 사이의 연결이다. ESP32가 살아 있는지는 **기기 상태** 카드에 따로 나온다 (`mic-01 정상 · 마지막 신호 12초 전`).
 4. 휴대폰에서 열기: Mac과 같은 Wi-Fi에 연결하고 `http://<Mac IP>:8000`을 연다.
    Mac IP는 `ipconfig getifaddr en0`로 확인한다.
 5. **알림 켜기**를 누른다 (진동 허용).
@@ -216,6 +218,7 @@ Serial Monitor를 보면서 소리별 `siren=` 점수를 표에 적는다. **학
 | 경적 소리 | 알림 없음 | |
 | 사이렌 1m 거리 | 2~3초 안에 웹 알림, Supabase에 한 줄 | |
 | 사이렌 30초 계속 | 10초 간격으로 기록 (쿨다운) | |
+| ESP32 USB 분리 | 90초 안에 웹에 "응답 없음" 경고, 다시 꽂으면 30초 안에 "정상" | |
 | Wi-Fi를 껐다 켜기 | 다시 연결되고 다음 사이렌은 기록됨 | |
 
 ---
@@ -263,5 +266,9 @@ git push
 | `[http] POST -> 401` | `config.h`의 key가 틀렸다 |
 | `[http] POST -> 404` | `SUPABASE_URL` 끝에 `/rest/v1/`가 붙어 있다 |
 | `[http] POST -> -1` | Wi-Fi가 끊겼거나 URL 오타. 2.4GHz Wi-Fi인지 확인 |
-| 웹이 "연결 끊김" | Publications에서 `siren_events`가 켜져 있는지 확인 |
-| 웹이 "설정 필요" | `web/config.js`가 비어 있다 |
+| 웹이 "서버 연결 끊김" | Publications에서 `siren_events`, `devices`가 켜져 있는지 확인 |
+| 기기 상태 카드가 비어 있음 | 펌웨어 0.3.0 이상인지, Serial에 `[http] heartbeat POST -> 201`이 찍히는지 확인. `42501`이면 `schema.sql`을 다시 실행 |
+| ESP32가 켜져 있는데 "응답 없음" | Serial의 heartbeat 응답 코드를 본다. 휴대폰 시계가 크게 틀려도 그렇게 보일 수 있다 |
+| 웹이 "설정 필요" | `web/config.js`가 없거나 비어 있다 (`config.example.js`에서 복사) |
+| 지운 기기·시험 기기가 "응답 없음"으로 계속 보임 | `web/config.js`의 `watchDevices`에 실제 기기만 적는다 |
+| 웹 코드를 고쳤는데 화면이 그대로 | 브라우저가 예전 `app.js`를 쓰는 것이다. `index.html`의 `?v=` 숫자를 올리거나 Cmd+Shift+R |
