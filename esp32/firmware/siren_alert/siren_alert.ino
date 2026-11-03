@@ -1,5 +1,6 @@
 // siren_alert: XIAO ESP32S3 Sense 마이크로 1초씩 듣고, 사이렌이면 Supabase에 이벤트를 기록한다.
 // 마이크 1초(16kHz) → Edge Impulse 소리 분류(siren / noise) → 연속 확인·쿨다운(alert_logic.h) → Supabase INSERT.
+// 30초마다 devices에 생존 신호를 보내, 웹이 기기가 꺼졌는지 알 수 있게 한다.
 // 웹 페이지(web/)가 Supabase Realtime으로 이벤트를 받아 화면 깜빡임·진동으로 알린다.
 // 라이브러리: esp32/model/의 Edge Impulse .zip을 Sketch → Include Library → Add .ZIP Library로 설치.
 // 설정: config.example.h를 config.h로 복사해 Wi-Fi와 Supabase 값을 채운다.
@@ -14,7 +15,7 @@
 #include "config.h"
 
 // 펌웨어를 바꿀 때마다 올린다. 이벤트의 fw_version으로 기록된다
-#define FW_VERSION "0.2.1"
+#define FW_VERSION "0.3.0"
 
 // ================= 설정 =================
 const char* SIREN_LABEL           = "SIREN";  // Edge Impulse 라벨과 같아야 한다 (모델 라벨: "Noise", "SIREN")
@@ -23,6 +24,7 @@ const int   CONFIRM_WINDOWS       = 2;        // 연속 N창(약 N초) 사이렌
 const uint32_t COOLDOWN_MS        = 10000;    // 알림 후 다음 알림까지 대기
 const unsigned long WIFI_RETRY_MS = 5000;     // Wi-Fi 끊겼을 때 재연결 간격
 const uint16_t HTTP_TIMEOUT_MS    = 5000;
+const uint32_t HEARTBEAT_MS       = 30000;    // 생존 신호 간격. 웹은 90초 넘게 없으면 "기기 응답 없음"
 const int   MIC_GAIN              = 8;        // mic_recorder.ino와 같은 값이어야 한다. XIAO PDM 마이크는 출력이 작아
                                               // 1이면 모델의 noise floor(-52dB) 아래로 잘려 점수가 0.50에 고정된다
 // ========================================
@@ -65,6 +67,8 @@ static int16_t micPeak = 0;  // 마지막 창의 최고 진폭 (gain 적용 후,
 static int16_t micRms = 0;   // 마지막 창의 평균 음량 (RMS)
 static AlertLogic alert(SIREN_THRESHOLD, CONFIRM_WINDOWS, COOLDOWN_MS);
 static unsigned long lastWifiTry = 0;
+static bool heartbeatSent = false;
+static unsigned long lastHeartbeat = 0;
 
 bool initMic() {
   i2s.setPinsPdmRx(MIC_CLK_PIN, MIC_DATA_PIN);
@@ -151,10 +155,19 @@ void ensureWiFi() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 }
 
-// Supabase REST로 siren_events에 한 줄 넣는다. 201이면 true (docs/contracts/siren_event.md)
-bool sendEvent(float confidence, uint32_t inferMs) {
+// Supabase로 보내는 JSON. tests/contracts가 이 두 형식의 필드를 schema.sql과 대조한다
+// siren_events 한 줄 (docs/contracts/siren_event.md)
+static const char EVENT_JSON[] =
+    "{\"device_id\":\"%s\",\"label\":\"%s\",\"confidence\":%.3f,\"infer_ms\":%u,"
+    "\"windows\":%d,\"fw_version\":\"%s\",\"rssi\":%d}";
+// devices 생존 신호 (docs/contracts/device_heartbeat.md). last_seen은 DB가 받은 시각으로 채운다
+static const char HEARTBEAT_JSON[] =
+    "{\"device_id\":\"%s\",\"fw_version\":\"%s\",\"rssi\":%d,\"uptime_s\":%lu}";
+
+// Supabase REST에 JSON을 POST한다. 2xx면 true
+bool postSupabase(const char* tag, const char* path, const char* prefer, const char* body) {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[http] Wi-Fi 없음, 기록 건너뜀");
+    Serial.printf("[http] %s: Wi-Fi 없음, 건너뜀\n", tag);
     return false;
   }
   WiFiClientSecure client;
@@ -162,22 +175,33 @@ bool sendEvent(float confidence, uint32_t inferMs) {
 
   HTTPClient http;
   http.setTimeout(HTTP_TIMEOUT_MS);
-  http.begin(client, String(SUPABASE_URL) + "/rest/v1/siren_events");
+  http.begin(client, String(SUPABASE_URL) + path);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("apikey", SUPABASE_KEY);  // anon(publishable) key. Authorization 헤더는 넣지 않는다
-  http.addHeader("Prefer", "return=minimal");
-
-  char body[256];
-  snprintf(body, sizeof(body),
-           "{\"device_id\":\"%s\",\"label\":\"%s\",\"confidence\":%.3f,\"infer_ms\":%u,"
-           "\"windows\":%d,\"fw_version\":\"%s\",\"rssi\":%d}",
-           DEVICE_ID, SIREN_LABEL, confidence, (unsigned)inferMs, CONFIRM_WINDOWS, FW_VERSION, WiFi.RSSI());
+  http.addHeader("Prefer", prefer);
 
   unsigned long t0 = millis();
   int code = http.POST((uint8_t*)body, strlen(body));
-  Serial.printf("[http] POST -> %d (%lu ms) %s\n", code, millis() - t0, code > 0 ? http.getString().c_str() : "");
+  Serial.printf("[http] %s POST -> %d (%lu ms) %s\n", tag, code, millis() - t0,
+                code > 0 ? http.getString().c_str() : "");
   http.end();
-  return code == 201;
+  return code >= 200 && code < 300;
+}
+
+// siren_events에 한 줄 넣는다
+bool sendEvent(float confidence, uint32_t inferMs) {
+  char body[256];
+  snprintf(body, sizeof(body), EVENT_JSON,
+           DEVICE_ID, SIREN_LABEL, confidence, (unsigned)inferMs, CONFIRM_WINDOWS, FW_VERSION, WiFi.RSSI());
+  return postSupabase("event", "/rest/v1/siren_events", "return=minimal", body);
+}
+
+// devices의 내 줄을 덮어쓴다 (없으면 만든다). 웹은 last_seen이 오래되면 "기기 응답 없음"을 띄운다
+bool sendHeartbeat() {
+  char body[160];
+  snprintf(body, sizeof(body), HEARTBEAT_JSON, DEVICE_ID, FW_VERSION, WiFi.RSSI(), millis() / 1000UL);
+  return postSupabase("heartbeat", "/rest/v1/devices?on_conflict=device_id",
+                      "resolution=merge-duplicates,return=minimal", body);
 }
 
 void setup() {
@@ -203,7 +227,7 @@ void setup() {
   }
 
   connectWiFi();
-  Serial.printf("[boot] 준비됨, device=%s\n", DEVICE_ID);
+  Serial.printf("[boot] 준비됨, device=%s, heartbeat=%lums\n", DEVICE_ID, (unsigned long)HEARTBEAT_MS);
 }
 
 void loop() {
@@ -227,5 +251,12 @@ void loop() {
   if (fire) {
     Serial.printf(">> 사이렌 확인 (최고 %.2f), 기록\n", alert.lastPeak());
     sendEvent(alert.lastPeak(), r.inferMs);  // 실패해도 쿨다운은 걸린다 (Supabase가 죽었을 때 매 창 재시도 방지)
+  }
+
+  // 부팅 후 Wi-Fi가 붙으면 바로 한 번, 그 뒤로 HEARTBEAT_MS마다. 실패해도 다음 주기에 다시 보낸다
+  if (WiFi.status() == WL_CONNECTED && (!heartbeatSent || millis() - lastHeartbeat >= HEARTBEAT_MS)) {
+    sendHeartbeat();
+    heartbeatSent = true;
+    lastHeartbeat = millis();
   }
 }
