@@ -6,7 +6,7 @@
 #include <ESP_I2S.h>
 
 const int SAMPLE_RATE = 16000;  // siren_alert 모델 입력과 같다
-const int MIC_GAIN    = 1;      // siren_alert.ino와 같은 값이어야 한다
+const int MIC_GAIN    = 8;      // siren_alert.ino와 같은 값이어야 한다
 const int MAX_SECONDS = 5;
 
 #define MIC_CLK_PIN  42

@@ -4,7 +4,7 @@
 // 라이브러리: esp32/model/의 Edge Impulse .zip을 Sketch → Include Library → Add .ZIP Library로 설치.
 // 설정: config.example.h를 config.h로 복사해 Wi-Fi와 Supabase 값을 채운다.
 
-#include <siren_detect_inferencing.h>
+#include <Emergency_vehices_alarm_inferencing.h>
 #include <ESP_I2S.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -14,16 +14,17 @@
 #include "config.h"
 
 // 펌웨어를 바꿀 때마다 올린다. 이벤트의 fw_version으로 기록된다
-#define FW_VERSION "0.1.0"
+#define FW_VERSION "0.2.1"
 
 // ================= 설정 =================
-const char* SIREN_LABEL           = "siren";  // Edge Impulse 라벨과 같아야 한다
+const char* SIREN_LABEL           = "SIREN";  // Edge Impulse 라벨과 같아야 한다 (모델 라벨: "Noise", "SIREN")
 const float SIREN_THRESHOLD       = 0.7f;     // 창 하나를 사이렌으로 칠 최소 점수
 const int   CONFIRM_WINDOWS       = 2;        // 연속 N창(약 N초) 사이렌이어야 알림 (순간 오탐 제거)
 const uint32_t COOLDOWN_MS        = 10000;    // 알림 후 다음 알림까지 대기
 const unsigned long WIFI_RETRY_MS = 5000;     // Wi-Fi 끊겼을 때 재연결 간격
 const uint16_t HTTP_TIMEOUT_MS    = 5000;
-const int   MIC_GAIN              = 1;        // mic_recorder.ino와 같은 값이어야 한다 (학습 데이터와 같은 음량)
+const int   MIC_GAIN              = 8;        // mic_recorder.ino와 같은 값이어야 한다. XIAO PDM 마이크는 출력이 작아
+                                              // 1이면 모델의 noise floor(-52dB) 아래로 잘려 점수가 0.50에 고정된다
 // ========================================
 
 // XIAO ESP32S3 Sense 확장보드의 PDM 마이크
@@ -60,6 +61,8 @@ void* ei_calloc(size_t nitems, size_t size) {
 static I2SClass i2s;
 static int16_t audioBuf[EI_CLASSIFIER_RAW_SAMPLE_COUNT];  // 1창(1초) = 16000샘플 = 32KB
 static int sirenIndex = -1;
+static int16_t micPeak = 0;  // 마지막 창의 최고 진폭 (gain 적용 후, 최대 32767)
+static int16_t micRms = 0;   // 마지막 창의 평균 음량 (RMS)
 static AlertLogic alert(SIREN_THRESHOLD, CONFIRM_WINDOWS, COOLDOWN_MS);
 static unsigned long lastWifiTry = 0;
 
@@ -85,12 +88,17 @@ bool recordWindow() {
     if (n == 0) return false;
     got += n;
   }
-  if (MIC_GAIN != 1) {
-    for (size_t i = 0; i < EI_CLASSIFIER_RAW_SAMPLE_COUNT; i++) {
-      int32_t v = (int32_t)audioBuf[i] * MIC_GAIN;
-      audioBuf[i] = v > 32767 ? 32767 : (v < -32768 ? -32768 : v);
-    }
+  int32_t peak = 0;
+  double sumSq = 0;
+  for (size_t i = 0; i < EI_CLASSIFIER_RAW_SAMPLE_COUNT; i++) {
+    int32_t v = (int32_t)audioBuf[i] * MIC_GAIN;
+    v = v > 32767 ? 32767 : (v < -32768 ? -32768 : v);
+    audioBuf[i] = v;
+    if (abs(v) > peak) peak = abs(v);
+    sumSq += (double)v * v;
   }
+  micPeak = peak;
+  micRms = (int16_t)sqrt(sumSq / EI_CLASSIFIER_RAW_SAMPLE_COUNT);
   return true;
 }
 
@@ -214,7 +222,8 @@ void loop() {
   digitalWrite(LED_PIN, r.score >= SIREN_THRESHOLD ? LOW : HIGH);
 
   bool fire = alert.update(r.score, millis());
-  Serial.printf("siren=%.2f infer_ms=%u hits=%d\n", r.score, (unsigned)r.inferMs, alert.hits());
+  Serial.printf("siren=%.2f infer_ms=%u hits=%d peak=%d rms=%d\n", r.score, (unsigned)r.inferMs, alert.hits(),
+                micPeak, micRms);
   if (fire) {
     Serial.printf(">> 사이렌 확인 (최고 %.2f), 기록\n", alert.lastPeak());
     sendEvent(alert.lastPeak(), r.inferMs);  // 실패해도 쿨다운은 걸린다 (Supabase가 죽었을 때 매 창 재시도 방지)
