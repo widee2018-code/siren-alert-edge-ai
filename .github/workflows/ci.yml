@@ -1,0 +1,79 @@
+# main·dev push와 PR마다 돈다. dev에서 통합·실험하고 마지막에 main으로 병합한다.
+#   test  : ruff + pytest (알림 판정 C++ 테스트, 펌웨어·웹·schema.sql 필드 대조)
+#   esp32 : mic_recorder 컴파일. esp32/model/에 Edge Impulse zip이 있으면 siren_alert도 컴파일
+name: ci
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/requirements.txt
+      - run: pipx run --spec ruff==0.8.6 ruff check .
+      - run: pip install -r tests/requirements.txt
+      - run: pytest
+
+  esp32:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      FQBN: esp32:esp32:XIAO_ESP32S3:PSRAM=opi
+      ESP32_CORE: "3.3.12"
+      ESP32_INDEX: https://espressif.github.io/arduino-esp32/package_esp32_index.json
+    steps:
+      - uses: actions/checkout@v4
+      - name: 코어·빌드 캐시 (모델 zip이 그대로면 모델 컴파일 결과 재사용)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.arduino15
+            ~/.cache/arduino
+          key: arduino-${{ env.ESP32_CORE }}-${{ hashFiles('esp32/model/*.zip') }}
+          restore-keys: arduino-${{ env.ESP32_CORE }}-
+      - uses: arduino/setup-arduino-cli@v2
+      - name: esp32 코어
+        run: |
+          arduino-cli core update-index --additional-urls "$ESP32_INDEX"
+          arduino-cli core list | grep -q "esp32:esp32 *$ESP32_CORE" \
+            || arduino-cli core install "esp32:esp32@$ESP32_CORE" --additional-urls "$ESP32_INDEX"
+
+      - name: mic_recorder 컴파일
+        run: arduino-cli compile --fqbn "$FQBN" esp32/firmware/mic_recorder
+
+      - name: 모델 zip 있는지
+        id: model
+        run: |
+          if ls esp32/model/*.zip >/dev/null 2>&1; then
+            echo "has=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::esp32/model/에 Edge Impulse zip이 없어 siren_alert 컴파일을 건너뜀"
+          fi
+      - name: Edge Impulse 라이브러리 설치
+        if: steps.model.outputs.has == 'true'
+        run: |
+          mkdir -p ~/Arduino/libraries
+          for z in esp32/model/*.zip; do unzip -q -o "$z" -d ~/Arduino/libraries; done
+      - name: siren_alert 컴파일
+        if: steps.model.outputs.has == 'true'
+        run: |
+          cp esp32/firmware/siren_alert/config.example.h esp32/firmware/siren_alert/config.h
+          arduino-cli compile --fqbn "$FQBN" esp32/firmware/siren_alert

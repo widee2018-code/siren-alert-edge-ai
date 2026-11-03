@@ -1,0 +1,6 @@
+esp32/firmware/siren_alert/config.h
+data/
+*.wav
+__pycache__/
+.pytest_cache/
+.DS_Store
