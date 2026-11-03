@@ -2,15 +2,14 @@
 
 | 항목 | 값 |
 |---|---|
-| Edge Impulse 프로젝트 | (만들면 링크를 적는다) |
-| 프로젝트 이름 | `siren_detect` → 라이브러리 헤더 `<siren_detect_inferencing.h>`. 이름을 다르게 지으면 `siren_alert.ino`의 `#include`를 바꾼다 |
-| 라벨 | `siren`, `noise` (사이렌인지 아닌지만 본다) |
-| 입력 | 16000Hz, 창 1000ms, stride 500ms |
-| 전처리 | MFE (기본값) |
-| 모델 | Classification, 기본 1D Conv |
-| 배포 | Arduino library, Quantized (int8), EON Compiler |
-| 라이브러리 버전 | (받으면 적는다) |
-| 정확도 | (Model testing 결과와 실제 시연 결과를 적는다) |
+| Edge Impulse 프로젝트 | `Emergency vehices alarm` (project id 1155472) |
+| 라이브러리 | `Emergency_vehices_alarm_inferencing` 1.0.17 → `#include <Emergency_vehices_alarm_inferencing.h>` |
+| 라벨 | `Noise`, `SIREN` (펌웨어 `SIREN_LABEL = "SIREN"`) |
+| 입력 | 16000Hz, 창 1000ms (16000샘플) |
+| 전처리 | Audio (Syntiant) 블록. Arduino 라이브러리에서는 MFE 함수(`extract_mfe_features`)로 CPU에서 계산한다 |
+| 모델 | Classification (Keras), int8, EON Compiler |
+| 데이터 | 이미 학습된 프로젝트의 데이터를 가져와 라벨을 정리하고 다시 학습했다. 출처: (원본 프로젝트 링크·만든 사람을 적는다) |
+| 정확도 | (Edge Impulse Model testing 결과와 XIAO 마이크 실측 결과를 적는다) |
 
 ## 데이터
 
